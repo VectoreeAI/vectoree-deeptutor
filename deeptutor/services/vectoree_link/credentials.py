@@ -8,6 +8,7 @@ import json
 import os
 from pathlib import Path
 import re
+import secrets
 from typing import Any
 from uuid import uuid4
 
@@ -40,6 +41,8 @@ _PUBLIC_POLL_KEYS = (
     "projectId",
     "projectName",
 )
+_ATTEMPT_NAME = "link-attempt.json"
+_PROGRESS_NAME = "link-progress.json"
 
 
 @dataclass(frozen=True)
@@ -90,7 +93,14 @@ def read_config(root: Path) -> dict[str, str]:
 
 
 def read_env_file(root: Path) -> dict[str, str]:
-    path = root / ".env"
+    """Vectoree keys from the data-volume env file, with a legacy ``.env`` fallback."""
+
+    legacy = _read_env_path(root / ".env")
+    current = _read_env_path(root / ".vectoree" / "env")
+    return {**legacy, **current}
+
+
+def _read_env_path(path: Path) -> dict[str, str]:
     try:
         content = path.read_text(encoding="utf-8")
     except OSError:
@@ -151,7 +161,11 @@ def write_linked_files(
     credentials: Mapping[str, str],
     env: MutableMapping[str, str],
 ) -> None:
-    """Persist ``.vectoree/config.json`` and upsert Vectoree keys in ``.env``."""
+    """Persist ``.vectoree/config.json`` and Vectoree keys in ``.vectoree/env``.
+
+    The image ``.env`` is not written. In Docker that file sits on a root
+    filesystem that is often read-only and is discarded on rebuild.
+    """
 
     directory = root / ".vectoree"
     directory.mkdir(parents=True, mode=0o700, exist_ok=True)
@@ -173,7 +187,7 @@ def write_linked_files(
         "VECTOREE_API_KEY": credentials["apiKey"],
         "VECTOREE_API_BASE": f"{api_url}/api/v1",
     }
-    env_path = root / ".env"
+    env_path = directory / "env"
     try:
         current = env_path.read_text(encoding="utf-8")
     except OSError:
@@ -182,6 +196,75 @@ def write_linked_files(
     env["VECTOREE_API_URL"] = updates["VECTOREE_API_URL"]
     env["VECTOREE_API_KEY"] = updates["VECTOREE_API_KEY"]
     env["VECTOREE_API_BASE"] = updates["VECTOREE_API_BASE"]
+
+
+def write_link_attempt(root: Path, attempt: Mapping[str, Any]) -> None:
+    """Store PKCE state on the data volume so any worker can finish the callback."""
+
+    _write_private(
+        root / ".vectoree" / _ATTEMPT_NAME,
+        json.dumps(dict(attempt), indent=2) + "\n",
+    )
+
+
+def read_link_attempt(root: Path) -> dict[str, Any]:
+    return _read_json_object(root / ".vectoree" / _ATTEMPT_NAME)
+
+
+def consume_link_attempt(root: Path, state: str) -> dict[str, Any] | None:
+    """Claim the pending login when ``state`` matches. A mismatch leaves it in place."""
+
+    current = read_link_attempt(root)
+    expected = str(current.get("state") or "")
+    if (
+        not current
+        or not state
+        or len(state) != len(expected)
+        or not secrets.compare_digest(state, expected)
+    ):
+        return None
+    path = root / ".vectoree" / _ATTEMPT_NAME
+    claimed = path.with_name(f".link-attempt.{os.getpid()}.claimed")
+    try:
+        os.replace(path, claimed)
+    except OSError:
+        return None
+    try:
+        loaded = _read_json_object(claimed)
+    finally:
+        claimed.unlink(missing_ok=True)
+    got = str(loaded.get("state") or "")
+    if len(got) != len(state) or not secrets.compare_digest(got, state):
+        return None
+    return loaded
+
+
+def clear_link_attempt(root: Path) -> None:
+    (root / ".vectoree" / _ATTEMPT_NAME).unlink(missing_ok=True)
+
+
+def write_link_progress(root: Path, progress: Mapping[str, Any]) -> None:
+    """Public link outcome. The verifier, API key, and JWT are never written here."""
+
+    payload: dict[str, Any] = {"status": str(progress.get("status") or "idle")}
+    for key in _PUBLIC_POLL_KEYS:
+        if key == "status":
+            continue
+        value = progress.get(key)
+        if isinstance(value, str) and value:
+            payload[key] = value
+    _write_private(root / ".vectoree" / _PROGRESS_NAME, json.dumps(payload, indent=2) + "\n")
+
+
+def read_link_progress(root: Path) -> dict[str, Any]:
+    loaded = _read_json_object(root / ".vectoree" / _PROGRESS_NAME)
+    if not loaded:
+        return {}
+    return public_poll(loaded)
+
+
+def clear_link_progress(root: Path) -> None:
+    (root / ".vectoree" / _PROGRESS_NAME).unlink(missing_ok=True)
 
 
 def detect_link(
@@ -288,6 +371,14 @@ def _origin_from_base(value: object) -> str:
         if text.endswith(suffix):
             return text[: -len(suffix)]
     return text
+
+
+def _read_json_object(path: Path) -> dict[str, Any]:
+    try:
+        loaded = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return loaded if isinstance(loaded, dict) else {}
 
 
 def _write_private(path: Path, text: str) -> None:

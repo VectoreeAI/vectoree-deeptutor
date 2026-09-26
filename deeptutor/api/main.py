@@ -729,6 +729,11 @@ app.include_router(tools_router.router, prefix="/api/tools", tags=["tools"], dep
 app.include_router(system.router, prefix="/api/system", tags=["system"], dependencies=_auth)
 app.include_router(voice.router, prefix="/api/voice", tags=["voice"], dependencies=_auth)
 app.include_router(
+    vectoree_link.public_router,
+    prefix="/api/vectoree",
+    tags=["vectoree"],
+)
+app.include_router(
     vectoree_link.router,
     prefix="/api/vectoree",
     tags=["vectoree"],

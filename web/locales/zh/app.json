@@ -357,6 +357,7 @@
   "Link Vectoree": "连接 Vectoree",
   "Connect this install to a Vectoree project before chat can use its models.": "在聊天使用模型之前，先把这个安装连接到 Vectoree 项目。",
   "API origin": "API 地址",
+  "Chat uses {{base}} after this install is linked.": "连接完成后，聊天会使用 {{base}}。",
   "Project ID or Console URL": "项目 ID 或控制台链接",
   "Recognized project": "识别到的项目",
   "Waiting for browser login…": "正在等待浏览器登录…",

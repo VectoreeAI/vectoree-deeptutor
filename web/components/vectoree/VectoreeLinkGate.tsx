@@ -19,7 +19,7 @@ export default function VectoreeLinkGate({
     let cancelled = false;
     fetchVectoreeLinkStatus().then((status) => {
       if (cancelled) return;
-      if (status && status.linked === false) {
+      if (status?.linked !== true) {
         router.replace("/link");
         return;
       }

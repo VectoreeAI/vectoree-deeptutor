@@ -89,7 +89,9 @@ services:
       # Everything DeepTutor persists lives under ./data — one tree to mount
       # and back up: admin workspace + runtime settings (data/user), per-user
       # workspaces (data/users), partners (data/partners), accounts/grants/
-      # audit (data/system), knowledge bases, memory.
+      # audit (data/system), knowledge bases, memory. Vectoree Link state
+      # lives in ./data/.vectoree/. Build this tree; the stock
+      # ghcr.io/hkuds/deeptutor image does not include /link.
       # The sandbox-runner gets a narrower slice of this volume: never
       # data/system, which holds auth state, provider API keys, and per-owner
       # secrets. What it *does* carry for non-admin accounts is wider than

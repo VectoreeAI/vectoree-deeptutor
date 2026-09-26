@@ -40,6 +40,7 @@ export async function fetchVectoreeLinkPoll(): Promise<VectoreeLinkPoll | null> 
 export async function startVectoreeLink(input: {
   apiUrl: string;
   projectId: string;
+  publicOrigin: string;
 }): Promise<{ ok: true; poll: VectoreeLinkPoll } | { ok: false; message: string }> {
   try {
     const response = await apiFetch(apiUrl("/api/vectoree/link/start"), {

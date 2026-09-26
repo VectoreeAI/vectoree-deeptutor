@@ -52,8 +52,11 @@ def parse_model_list(payload: object) -> list[ListedModel]:
 
 
 def pick_default_slug(models: list[ListedModel]) -> str:
-    """Prefer a vision+text model, then the first listed id, then ``vectoree/auto``."""
+    """Prefer ``vectoree/auto``, then a vision+text model, then the first id."""
 
+    for model in models:
+        if model.slug == FALLBACK_MODEL:
+            return model.slug
     for model in models:
         if model.vision:
             return model.slug
@@ -63,15 +66,11 @@ def pick_default_slug(models: list[ListedModel]) -> str:
 
 
 def catalog_model_entries(models: list[ListedModel]) -> list[dict[str, str]]:
-    chosen = pick_default_slug(models)
-    if not models:
-        return [
-            {
-                "id": "vectoree-model-auto",
-                "name": FALLBACK_MODEL,
-                "model": FALLBACK_MODEL,
-            }
-        ]
+    listed = list(models)
+    if not any(model.slug == FALLBACK_MODEL for model in listed):
+        listed.insert(0, ListedModel(slug=FALLBACK_MODEL, name=FALLBACK_MODEL, vision=False))
+    chosen = pick_default_slug(listed)
+    models = listed
     ordered = sorted(models, key=lambda model: 0 if model.slug == chosen else 1)
     entries: list[dict[str, str]] = []
     seen: set[str] = set()
@@ -82,6 +81,60 @@ def catalog_model_entries(models: list[ListedModel]) -> list[dict[str, str]]:
         seen.add(entry_id)
         entries.append({"id": entry_id, "name": model.name, "model": model.slug})
     return entries
+
+
+def ensure_vectoree_placeholder(service: ModelCatalogService) -> None:
+    """Seed an empty LLM catalog with Vectoree and ``vectoree/auto``.
+
+    No API key is stored, so an install still counts as unlinked until the
+    user finishes ``/link``.
+    """
+
+    try:
+        loaded = service.load()
+    except Exception:
+        return
+    services = loaded.get("services") if isinstance(loaded, dict) else None
+    llm = services.get("llm") if isinstance(services, dict) else None
+    if not _service_empty(llm):
+        return
+
+    def mutate(catalog: dict[str, Any]) -> None:
+        if not _service_empty((catalog.get("services") or {}).get("llm")):
+            return
+        connections = catalog.get("connections")
+        if not isinstance(connections, list):
+            connections = []
+            catalog["connections"] = connections
+        if not any(
+            isinstance(item, dict) and item.get("id") == CONNECTION_ID for item in connections
+        ):
+            connections.append(
+                {
+                    "id": CONNECTION_ID,
+                    "name": "Vectoree",
+                    "provider": "openai",
+                    "api_key": "",
+                    "base_url": "https://vectoree.ai/api/v1",
+                    "api_version": "",
+                    "extra_headers": {},
+                    "source": "vectoree",
+                }
+            )
+        _ensure_profile(
+            catalog,
+            "llm",
+            LLM_PROFILE_ID,
+            [
+                {
+                    "id": "vectoree-model-auto",
+                    "name": FALLBACK_MODEL,
+                    "model": FALLBACK_MODEL,
+                }
+            ],
+        )
+
+    service.update(mutate)
 
 
 def apply_vectoree_catalog(

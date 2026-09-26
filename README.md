@@ -381,7 +381,16 @@ deeptutor start --dev
 <details>
 <summary><b>Option 3 — Docker</b> · one self-contained container</summary>
 
-One container for the full Web app. Images on GitHub Container Registry:
+This Vectoree fork has to be built from this repository. The stock image `ghcr.io/hkuds/deeptutor` does not include `/link`. Compose builds the local tree and mounts `./data` at `/app/data`. Link state (console JWT and project key) is stored on the host at `./data/.vectoree/`.
+
+```bash
+docker compose build
+docker compose up -d
+```
+
+Open [http://127.0.0.1:3782](http://127.0.0.1:3782). Until the install is linked, the app opens `/link`. After a Vectoree project is connected, chat uses that gateway and defaults to `vectoree/auto`. The browser login returns to `http://127.0.0.1:3782/api/vectoree/link/callback` on the published frontend port. Podman: `podman compose -f compose.yaml up -d --build`.
+
+Images on GitHub Container Registry (upstream DeepTutor, without this fork's Link flow):
 
 - `ghcr.io/hkuds/deeptutor:latest` — latest stable release
 - `ghcr.io/hkuds/deeptutor:<version>` — exact release without the leading `v` (for example `:1.6.3`); pre-releases receive only their version tag

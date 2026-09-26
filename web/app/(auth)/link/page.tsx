@@ -66,7 +66,11 @@ export default function VectoreeLinkPage() {
     }
     setError("");
     setPhase("starting");
-    const result = await startVectoreeLink({ apiUrl, projectId });
+    const result = await startVectoreeLink({
+      apiUrl,
+      projectId,
+      publicOrigin: window.location.origin,
+    });
     if (!result.ok) {
       setPhase("error");
       setError(result.message || t("Could not start Vectoree link"));
@@ -128,10 +132,16 @@ export default function VectoreeLinkPage() {
                 type="url"
                 required
                 value={apiUrl}
+                placeholder="https://vectoree.ai"
                 onChange={(event) => setApiUrl(event.target.value)}
                 className={inputClass}
                 disabled={busy}
               />
+              <p className="mt-1.5 text-xs text-[var(--muted-foreground)]">
+                {t("Chat uses {{base}} after this install is linked.", {
+                  base: "https://vectoree.ai/api/v1",
+                })}
+              </p>
             </div>
 
             <div>

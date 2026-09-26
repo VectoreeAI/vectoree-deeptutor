@@ -33,8 +33,10 @@
 #     Files you create on the host are visible as your own user inside.
 #   * Host-side port bindings are LOOPBACK ONLY (127.0.0.1:). Drop the
 #     `127.0.0.1:` prefix to expose on all interfaces.
-#   * Two services: `deeptutor` (backend+frontend in one GHCR image, run
+#   * Two services: `deeptutor` (backend+frontend built from this repo, run
 #     under supervisord) and `pocketbase` (optional auth/storage sidecar).
+#     Do not substitute the stock ghcr.io/hkuds/deeptutor image: this fork's
+#     /link flow and ./data/.vectoree credentials are not in that image.
 #     The sandbox-runner sidecar from docker-compose.yml is intentionally
 #     NOT included: the main app falls back to bwrap (Linux, if installed
 #     in the image) or the restricted subprocess backend controlled by
@@ -135,9 +137,12 @@ services:
   # the supervisord children's environment, so changing ports/auth/providers
   # means editing JSONs + `podman compose restart`.
   deeptutor:
-    image: ghcr.io/hkuds/deeptutor:latest
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: production
+    image: deeptutor-vectoree:local
     container_name: deeptutor
-    pull_policy: always
     restart: unless-stopped
     userns_mode: keep-id
     read_only: true

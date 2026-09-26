@@ -443,7 +443,7 @@ function ConnectionRow({
               className={inputClass}
               aria-label={t("Base URL")}
               value={connection.base_url}
-              placeholder={target?.default_base_url || "https://…/v1"}
+              placeholder={target?.default_base_url || "https://vectoree.ai/api/v1"}
               onChange={(event) => onField("base_url", event.target.value)}
             />
           </div>
@@ -606,7 +606,7 @@ function AddConnectionPanel({
             className={inputClass}
             aria-label={t("Base URL")}
             value={baseUrl}
-            placeholder={target?.default_base_url || "https://…/v1"}
+            placeholder={target?.default_base_url || "https://vectoree.ai/api/v1"}
             onChange={(event) => setBaseUrl(event.target.value)}
           />
           <p className="mt-1.5 text-[11px] text-[var(--muted-foreground)]">

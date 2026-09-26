@@ -289,3 +289,4 @@ dmypy.json
 # ============================================
 prompts/
 deploy-local.sh
+.cursorrules

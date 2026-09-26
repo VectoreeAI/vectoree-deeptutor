@@ -1,7 +1,9 @@
-"""PKCE loopback, project-key mint, and in-memory link progress.
+"""PKCE on the published app port, project-key mint, and in-memory link progress.
 
 The poll snapshot never includes the API key or the console JWT. Those values
-are written only to ``.vectoree/config.json`` and the model catalog.
+are written only to ``<data>/.vectoree/`` and the model catalog. The browser
+returns to ``/api/vectoree/link/callback`` on the host-visible origin, so a
+login started from outside the container can finish.
 """
 
 from __future__ import annotations
@@ -9,7 +11,6 @@ from __future__ import annotations
 import base64
 from collections.abc import Callable, Mapping, MutableMapping
 import hashlib
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 import logging
 import os
@@ -19,21 +20,33 @@ import socket
 import subprocess
 import sys
 import threading
+import time
 from typing import Any
-from urllib.parse import parse_qs, urlencode, urlsplit
+from urllib.parse import urlencode, urlsplit
 
 import httpx
 
 from deeptutor.services.config.model_catalog import ModelCatalogService, get_model_catalog_service
 
-from .catalog import apply_vectoree_catalog, catalog_model_entries, parse_model_list
+from .catalog import (
+    apply_vectoree_catalog,
+    catalog_model_entries,
+    ensure_vectoree_placeholder,
+    parse_model_list,
+)
 from .credentials import (
+    clear_link_progress,
+    consume_link_attempt,
     detect_link,
     extract_project_id,
     link_status_payload,
     public_poll,
     read_device_id,
+    read_link_attempt,
+    read_link_progress,
     redact_text,
+    write_link_attempt,
+    write_link_progress,
     write_linked_files,
 )
 from .errors import VectoreeLinkError
@@ -50,6 +63,8 @@ KEY_SCOPES = (
     "auth:*",
 )
 _DEFAULT_ORIGIN = "https://vectoree.ai"
+_CALLBACK_PATH = "/api/vectoree/link/callback"
+_LOOPBACK_HOSTS = {"localhost", "127.0.0.1", "::1"}
 _TIMEOUT_SECONDS = 180.0
 RequestJson = Callable[[str, str, Mapping[str, str], Mapping[str, Any] | None], tuple[int, Any]]
 
@@ -77,113 +92,33 @@ def pkce_pair() -> tuple[str, str]:
     return verifier, challenge
 
 
-class _CallbackServer(ThreadingHTTPServer):
-    allow_reuse_address = False
-    daemon_threads = True
+def callback_redirect_uri(public_origin: str | None) -> str:
+    """Build the host-visible callback on the origin the browser already uses.
 
-    def __init__(self, expected_state: str, done: threading.Event) -> None:
-        self.expected_state = expected_state
-        self.done = done
-        self.code: str | None = None
-        self.error: str | None = None
-        super().__init__(("127.0.0.1", 0), _CallbackHandler)
+    Only loopback hosts are accepted. The verifier stays on the server; the
+    browser is sent back to the published DeepTutor port instead of a random
+    port bound inside the container.
+    """
 
-    def server_bind(self) -> None:
-        self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 0)
-        super().server_bind()
-        host = self.server_address[0]
-        if host != "127.0.0.1":
-            raise VectoreeLinkError("OAuth callback must bind to 127.0.0.1")
-
-
-class _CallbackHandler(BaseHTTPRequestHandler):
-    protocol_version = "HTTP/1.1"
-
-    def do_GET(self) -> None:  # noqa: N802
-        server: _CallbackServer = self.server  # type: ignore[assignment]
-        parsed = urlsplit(self.path)
-        if parsed.path != "/callback":
-            self._send(404, "<p>Not found</p>")
-            return
-        query = parse_qs(parsed.query, keep_blank_values=True)
-        code = _first(query.get("code"))
-        state = _first(query.get("state"))
-        if (
-            not code
-            or not state
-            or len(state) != len(server.expected_state)
-            or not secrets.compare_digest(state, server.expected_state)
-        ):
-            self._send(400, "<p>Invalid Vectoree login callback.</p>")
-            server.error = "Invalid OAuth callback"
-            server.done.set()
-            return
-        self._send(
-            200,
-            "<!doctype html><title>Vectoree</title>"
-            '<body style="font-family:sans-serif"><h1>Vectoree connected</h1>'
-            "<p>You can close this window and return to DeepTutor.</p></body>",
+    text = (public_origin or "").strip()
+    parsed = urlsplit(text)
+    host = (parsed.hostname or "").lower()
+    path = parsed.path.rstrip("/")
+    if (
+        parsed.scheme not in {"http", "https"}
+        or not host
+        or parsed.username
+        or parsed.password
+        or parsed.query
+        or parsed.fragment
+        or path not in {"", "/"}
+        or host not in _LOOPBACK_HOSTS
+    ):
+        raise VectoreeLinkError(
+            "Open Link in the browser on this machine. "
+            "Vectoree must call back to localhost on the published DeepTutor port."
         )
-        server.code = code
-        server.done.set()
-
-    def log_message(self, format: str, *args: Any) -> None:
-        return
-
-    def _send(self, status: int, body: str) -> None:
-        encoded = body.encode("utf-8")
-        self.send_response(status)
-        self.send_header("Content-Type", "text/html; charset=utf-8")
-        self.send_header("Content-Length", str(len(encoded)))
-        self.send_header("Cache-Control", "no-store")
-        self.end_headers()
-        self.wfile.write(encoded)
-
-
-class Loopback:
-    """One-shot callback listener bound only to ``127.0.0.1``."""
-
-    def __init__(self, expected_state: str) -> None:
-        self._done = threading.Event()
-        self._server = _CallbackServer(expected_state, self._done)
-        self.port = int(self._server.server_address[1])
-        self._thread = threading.Thread(
-            target=self._server.serve_forever,
-            kwargs={"poll_interval": 0.2},
-            name="vectoree-link-callback",
-            daemon=True,
-        )
-        self._thread.start()
-
-    def wait_for_code(self, timeout: float) -> str:
-        if not self._done.wait(timeout):
-            self._server.error = "Console login timed out. Try connecting again."
-            self._done.set()
-        self.shutdown()
-        if self._server.error:
-            raise VectoreeLinkError(self._server.error)
-        if not self._server.code:
-            raise VectoreeLinkError("Invalid OAuth callback")
-        return self._server.code
-
-    def fail(self, reason: str) -> None:
-        if not self._done.is_set():
-            self._server.error = reason
-            self._done.set()
-        self.shutdown()
-
-    def shutdown(self) -> None:
-        thread = threading.Thread(
-            target=self._stop, name="vectoree-link-callback-stop", daemon=True
-        )
-        thread.start()
-
-    def _stop(self) -> None:
-        try:
-            self._server.shutdown()
-            self._server.server_close()
-        except OSError:
-            return
+    return f"{parsed.scheme}://{parsed.netloc}{_CALLBACK_PATH}"
 
 
 class VectoreeLinker:
@@ -205,36 +140,55 @@ class VectoreeLinker:
         self._timeout_s = timeout_s
         self._lock = threading.Lock()
         self._generation = 0
-        self._loopback: Loopback | None = None
+        self._pending: dict[str, Any] | None = None
         self._state: dict[str, Any] = {"status": "idle"}
 
     def status(self) -> dict[str, Any]:
+        try:
+            ensure_vectoree_placeholder(self.catalog)
+        except Exception:
+            logger.info("Vectoree placeholder catalog was not seeded")
         info = detect_link(self.root, self.env, _safe_catalog(self.catalog))
         return link_status_payload(info)
 
     def snapshot(self) -> dict[str, Any]:
+        disk = self._disk_state()
+        if disk and disk.get("status") == "pending":
+            return public_poll(disk)
+        info = detect_link(self.root, self.env, _safe_catalog(self.catalog))
+        if info.linked:
+            progress = disk if disk and disk.get("status") == "linked" else {}
+            return public_poll(
+                {
+                    "status": "linked",
+                    "apiUrl": info.api_url or str(progress.get("apiUrl") or ""),
+                    "projectName": info.project_name or str(progress.get("projectName") or ""),
+                    "projectId": str(progress.get("projectId") or ""),
+                }
+            )
+        if disk and disk.get("status") == "error":
+            return public_poll(disk)
         with self._lock:
             state = dict(self._state)
-        if state.get("status") == "idle":
-            info = detect_link(self.root, self.env, _safe_catalog(self.catalog))
-            if info.linked:
-                state = {
-                    "status": "linked",
-                    "apiUrl": info.api_url,
-                    "projectName": info.project_name,
-                }
-        return public_poll(state)
+        if state.get("status") == "error":
+            return public_poll(state)
+        return public_poll({"status": "idle"})
 
-    def start(self, *, api_url: str | None, project_id: str) -> dict[str, Any]:
+    def start(
+        self,
+        *,
+        api_url: str | None,
+        project_id: str,
+        public_origin: str | None = None,
+    ) -> dict[str, Any]:
         origin = normalize_api_url(api_url)
         resolved_id = extract_project_id(project_id)
         if resolved_id is None:
             raise VectoreeLinkError("projectId must be a UUID from the Vectoree console")
         ensure_root_writable(self.root)
+        redirect_uri = callback_redirect_uri(public_origin)
         verifier, challenge = pkce_pair()
         state_value = secrets.token_hex(16)
-        loopback = Loopback(state_value)
-        redirect_uri = f"http://127.0.0.1:{loopback.port}/callback"
         query = urlencode(
             {
                 "response_type": "code",
@@ -245,71 +199,67 @@ class VectoreeLinker:
             }
         )
         authorize_url = f"{origin}/api/system/auth/cli/authorize?{query}"
+        pending = {
+            "attempt": 0,
+            "state": state_value,
+            "verifier": verifier,
+            "redirect_uri": redirect_uri,
+            "api_url": origin,
+            "project_id": resolved_id,
+            "authorizeUrl": authorize_url,
+            "expiresAt": time.time() + self._timeout_s,
+        }
         with self._lock:
             self._generation += 1
-            attempt = self._generation
-            previous = self._loopback
-            self._loopback = loopback
+            pending["attempt"] = self._generation
+            self._pending = pending
             self._state = {
                 "status": "pending",
                 "authorizeUrl": authorize_url,
                 "apiUrl": origin,
                 "projectId": resolved_id,
             }
-        if previous is not None:
-            previous.fail("Login cancelled")
-        thread = threading.Thread(
-            target=self._finish,
-            kwargs={
-                "attempt": attempt,
-                "api_url": origin,
-                "project_id": resolved_id,
-                "verifier": verifier,
-                "redirect_uri": redirect_uri,
-                "loopback": loopback,
-            },
-            name="vectoree-link",
-            daemon=True,
-        )
-        thread.start()
+        clear_link_progress(self.root)
+        write_link_attempt(self.root, pending)
+        self._arm_timeout(int(pending["attempt"]))
         try:
             self._open_url(authorize_url)
         except Exception:
             logger.info("Vectoree authorize URL was not opened by the system browser")
         return self.snapshot()
 
-    @property
-    def root(self) -> Path:
-        if self._root is not None:
-            return self._root
-        return resolve_project_root()
-
-    @property
-    def env(self) -> MutableMapping[str, str]:
-        if self._env is not None:
-            return self._env
-        return os.environ
-
-    @property
-    def catalog(self) -> ModelCatalogService:
-        if self._catalog is not None:
-            return self._catalog
-        return get_model_catalog_service()
-
-    def _finish(
+    def accept_callback(
         self,
         *,
-        attempt: int,
-        api_url: str,
-        project_id: str,
-        verifier: str,
-        redirect_uri: str,
-        loopback: Loopback,
+        code: str | None,
+        state: str | None,
+        error: str | None,
     ) -> None:
+        """Finish a login when the host browser hits the published callback."""
+
+        pending = consume_link_attempt(self.root, state or "")
+        if pending is None:
+            raise VectoreeLinkError("Invalid OAuth callback")
+        if float(pending.get("expiresAt") or 0) < time.time():
+            self._mark_error(
+                int(pending.get("attempt") or 0),
+                str(pending.get("api_url") or ""),
+                str(pending.get("project_id") or ""),
+                "Console login timed out. Try connecting again.",
+            )
+            raise VectoreeLinkError("Console login timed out. Try connecting again.")
+        with self._lock:
+            attempt = int(pending.get("attempt") or self._generation)
+            self._pending = None
+            verifier = str(pending["verifier"])
+            redirect_uri = str(pending["redirect_uri"])
+            api_url = str(pending["api_url"])
+            project_id = str(pending["project_id"])
+        if error or not code:
+            message = redact_text(error or "", fallback="Invalid OAuth callback")
+            self._mark_error(attempt, api_url, project_id, message)
+            raise VectoreeLinkError(message)
         try:
-            code = loopback.wait_for_code(self._timeout_s)
-            if not self._current(attempt):
-                return
             session = _exchange_code(
                 self._request_json,
                 api_url,
@@ -317,8 +267,6 @@ class VectoreeLinker:
                 verifier=verifier,
                 redirect_uri=redirect_uri,
             )
-            if not self._current(attempt):
-                return
             project_name = _lookup_project_name(
                 self._request_json, api_url, session["accessToken"], project_id
             )
@@ -329,8 +277,8 @@ class VectoreeLinker:
                 project_id=project_id,
                 root=self.root,
             )
-            if not self._current(attempt):
-                return
+            if self._replaced(state or ""):
+                raise VectoreeLinkError("Login cancelled")
             models = _list_models(self._request_json, api_url, minted["apiKey"])
             apply_vectoree_catalog(
                 self.catalog,
@@ -351,35 +299,117 @@ class VectoreeLinker:
                 },
                 self.env,
             )
+            linked = {
+                "status": "linked",
+                "apiUrl": api_url,
+                "projectId": project_id,
+                "projectName": project_name,
+            }
+            write_link_progress(self.root, linked)
             with self._lock:
-                if attempt != self._generation:
-                    return
-                self._state = {
-                    "status": "linked",
-                    "apiUrl": api_url,
-                    "projectId": project_id,
-                    "projectName": project_name,
-                }
-                self._loopback = None
+                self._pending = None
+                self._state = linked
+        except VectoreeLinkError as exc:
+            if str(exc) == "Login cancelled":
+                raise
+            message = redact_text(str(exc))
+            self._mark_error(attempt, api_url, project_id, message)
+            raise VectoreeLinkError(message) from exc
         except Exception as exc:
-            if not self._current(attempt):
-                return
+            if self._replaced(state or ""):
+                raise VectoreeLinkError("Login cancelled") from exc
             message = redact_text(str(exc) if str(exc) else "Could not connect Vectoree")
             logger.info("Vectoree link failed: %s", message)
-            with self._lock:
-                if attempt != self._generation:
-                    return
-                self._state = {
-                    "status": "error",
-                    "apiUrl": api_url,
-                    "projectId": project_id,
-                    "message": message,
-                }
-                self._loopback = None
+            self._mark_error(attempt, api_url, project_id, message)
+            raise VectoreeLinkError(message) from exc
 
-    def _current(self, attempt: int) -> bool:
+    @property
+    def root(self) -> Path:
+        if self._root is not None:
+            return self._root
+        return resolve_project_root()
+
+    @property
+    def env(self) -> MutableMapping[str, str]:
+        if self._env is not None:
+            return self._env
+        return os.environ
+
+    @property
+    def catalog(self) -> ModelCatalogService:
+        if self._catalog is not None:
+            return self._catalog
+        return get_model_catalog_service()
+
+    def _disk_state(self) -> dict[str, Any] | None:
+        attempt = read_link_attempt(self.root)
+        if attempt:
+            expires = float(attempt.get("expiresAt") or 0)
+            api_url = str(attempt.get("api_url") or "")
+            project_id = str(attempt.get("project_id") or "")
+            if expires and expires < time.time():
+                clear_link_attempt_state = str(attempt.get("state") or "")
+                if consume_link_attempt(self.root, clear_link_attempt_state) is not None:
+                    self._mark_error(
+                        int(attempt.get("attempt") or 0),
+                        api_url,
+                        project_id,
+                        "Console login timed out. Try connecting again.",
+                    )
+                progress = read_link_progress(self.root)
+                return progress or None
+            return {
+                "status": "pending",
+                "authorizeUrl": str(attempt.get("authorizeUrl") or ""),
+                "apiUrl": api_url,
+                "projectId": project_id,
+            }
+        progress = read_link_progress(self.root)
+        if progress.get("status") in {"linked", "error"}:
+            return progress
+        return None
+
+    def _arm_timeout(self, attempt: int) -> None:
+        def fire() -> None:
+            with self._lock:
+                pending = self._pending
+                if attempt != self._generation or pending is None:
+                    return
+                state_value = str(pending.get("state") or "")
+                api_url = str(pending.get("api_url") or "")
+                project_id = str(pending.get("project_id") or "")
+            if consume_link_attempt(self.root, state_value) is None:
+                return
+            self._mark_error(
+                attempt,
+                api_url,
+                project_id,
+                "Console login timed out. Try connecting again.",
+            )
+
+        timer = threading.Timer(self._timeout_s, fire)
+        timer.daemon = True
+        timer.start()
+
+    def _mark_error(self, attempt: int, api_url: str, project_id: str, message: str) -> None:
+        progress = {
+            "status": "error",
+            "apiUrl": api_url,
+            "projectId": project_id,
+            "message": message,
+        }
+        write_link_progress(self.root, progress)
         with self._lock:
-            return attempt == self._generation
+            self._pending = None
+            if attempt == self._generation or attempt == 0:
+                self._state = progress
+
+    def _replaced(self, state: str) -> bool:
+        """True when a newer login has been stored since this callback was claimed."""
+
+        newer = read_link_attempt(self.root)
+        newer_state = str(newer.get("state") or "")
+        return bool(newer_state) and newer_state != state
 
 
 _linker: VectoreeLinker | None = None
@@ -567,8 +597,3 @@ def _safe_catalog(service: ModelCatalogService) -> dict[str, Any] | None:
         return None
     return loaded if isinstance(loaded, dict) else None
 
-
-def _first(values: list[str] | None) -> str:
-    if not values:
-        return ""
-    return values[0]

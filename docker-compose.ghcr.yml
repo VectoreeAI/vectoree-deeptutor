@@ -4,6 +4,9 @@
 # Run DeepTutor using the official pre-built image from GitHub Container Registry.
 # No local build required — the image is pulled automatically.
 #
+# This Vectoree fork is not that image. /link and ./data/.vectoree are only
+# in a container built from this repo (`docker-compose.yml` or `compose.yaml`).
+#
 # Usage:
 #   python scripts/docker_compose.py -f docker-compose.ghcr.yml up -d
 #

@@ -1,42 +1,35 @@
-"""Project root used for ``.vectoree/`` and the optional ``.env`` upsert."""
+"""Data directory used for ``.vectoree/`` on the writable DeepTutor volume."""
 
 from __future__ import annotations
 
 from collections.abc import Mapping
-import os
 from pathlib import Path
 
-from deeptutor.runtime.home import DEEPTUTOR_HOME_ENV, PACKAGE_ROOT
+from deeptutor.runtime.home import DEEPTUTOR_HOME_ENV, get_runtime_data_root
 
 from .errors import VectoreeLinkError
 
 _READ_ONLY_MESSAGE = (
-    "Vectoree Link needs a writable project root so it can save .vectoree/. "
-    "A read-only Docker filesystem cannot store that directory; link from a "
-    "writable checkout instead."
+    "Vectoree Link needs a writable data directory so it can save .vectoree/. "
+    "Mount ./data at /app/data and link again; the image root is not a place "
+    "to store the project key."
 )
 
 
 def resolve_project_root(env: Mapping[str, str] | None = None) -> Path:
-    """Return the directory that should own ``.vectoree/``.
+    """Return the data directory that should own ``.vectoree/``.
 
-    ``DEEPTUTOR_HOME`` wins when it is set, matching the runtime home DeepTutor
-    already uses for a launch. Otherwise walk upward from the working directory
-    for a checkout that contains both ``pyproject.toml`` and ``deeptutor/``.
+    Docker bind-mounts this at ``/app/data``. It is ``<DEEPTUTOR_HOME>/data``
+    (or ``<cwd>/data`` when that variable is unset), not the package root.
+    The package root is often read-only in a container, and files written
+    there disappear on rebuild.
     """
 
-    source = os.environ if env is None else env
-    raw_home = str(source.get(DEEPTUTOR_HOME_ENV) or "").strip()
-    if raw_home:
-        return Path(raw_home).expanduser().resolve()
-
-    start = Path.cwd().resolve()
-    for candidate in (start, *start.parents):
-        if (candidate / "pyproject.toml").is_file() and (candidate / "deeptutor").is_dir():
-            return candidate
-    if (PACKAGE_ROOT / "pyproject.toml").is_file() and (PACKAGE_ROOT / "deeptutor").is_dir():
-        return PACKAGE_ROOT
-    return start
+    if env is None:
+        return get_runtime_data_root()
+    raw_home = str(env.get(DEEPTUTOR_HOME_ENV) or "").strip()
+    home = Path(raw_home).expanduser().resolve() if raw_home else Path.cwd().resolve()
+    return (home / "data").resolve()
 
 
 def ensure_root_writable(root: Path) -> None:

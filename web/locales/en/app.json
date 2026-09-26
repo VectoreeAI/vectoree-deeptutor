@@ -357,6 +357,7 @@
   "Link Vectoree": "Link Vectoree",
   "Connect this install to a Vectoree project before chat can use its models.": "Connect this install to a Vectoree project before chat can use its models.",
   "API origin": "API origin",
+  "Chat uses {{base}} after this install is linked.": "Chat uses {{base}} after this install is linked.",
   "Project ID or Console URL": "Project ID or Console URL",
   "Recognized project": "Recognized project",
   "Waiting for browser login…": "Waiting for browser login…",

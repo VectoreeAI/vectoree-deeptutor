@@ -277,7 +277,7 @@ export function ProvidersWorkspace() {
                             value={connection.base_url}
                             onChange={(v) => change("base_url", v)}
                             placeholder={
-                              option?.base_url || "https://api.example.com/v1"
+                              option?.base_url || "https://vectoree.ai/api/v1"
                             }
                           />
                           <p className="text-xs leading-relaxed text-[var(--muted-foreground)]">

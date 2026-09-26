@@ -1764,7 +1764,7 @@ function ProfileFields({
                       ? "https://api.openai.com/v1/embeddings"
                       : service === "search"
                         ? "http://localhost:8888"
-                        : "https://api.openai.com/v1"
+                        : "https://vectoree.ai/api/v1"
                   }
                 />
                 {service === "embedding" && !linkedConnection && (
