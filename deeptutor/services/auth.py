@@ -61,6 +61,18 @@ if AUTH_ENABLED and not POCKETBASE_ENABLED and not AUTH_SECRET:
     AUTH_SECRET = load_or_create_auth_secret()
 
 
+def ensure_auth_secret() -> str:
+    """Load the JWT secret, creating it when Vectoree login needs a session."""
+
+    global AUTH_SECRET
+    if AUTH_SECRET:
+        return AUTH_SECRET
+    from deeptutor.multi_user.identity import load_or_create_auth_secret
+
+    AUTH_SECRET = load_or_create_auth_secret()
+    return AUTH_SECRET
+
+
 # ---------------------------------------------------------------------------
 # Token payload
 # ---------------------------------------------------------------------------

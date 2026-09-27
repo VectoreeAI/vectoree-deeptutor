@@ -2,9 +2,14 @@
 
 import { Suspense, useCallback, useState, useEffect } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
-import Link from "next/link";
 import { useTranslation } from "react-i18next";
-import { login, fetchAuthStatus, checkIsFirstUser } from "@/lib/auth";
+import {
+  fetchVectoreeSession,
+  login,
+  register,
+  resendVectoreeCode,
+  verifyVectoreeEmail,
+} from "@/lib/auth";
 import {
   inheritLoginHash,
   normalizeInternalReturnPath,
@@ -26,23 +31,32 @@ function LoginPageContent() {
 
   const registered = searchParams.get("registered") === "1";
 
-  const [username, setUsername] = useState("");
+  const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+  const [otp, setOtp] = useState("");
+  const [needsCode, setNeedsCode] = useState(false);
+  const [creating, setCreating] = useState(false);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
+  const [ready, setReady] = useState(false);
 
   useEffect(() => {
-    // If already authenticated, skip login
-    fetchAuthStatus().then((status) => {
-      if (status?.authenticated) {
+    let cancelled = false;
+    fetchVectoreeSession().then((session) => {
+      if (cancelled) return;
+      if (session && !session.linked) {
+        router.replace("/link");
+        return;
+      }
+      if (session?.authenticated) {
         router.replace(resolvedNext());
         return;
       }
-      // No users registered yet — send straight to the registration page
-      checkIsFirstUser().then((first) => {
-        if (first) router.replace("/register");
-      });
+      setReady(true);
     });
+    return () => {
+      cancelled = true;
+    };
   }, [router, resolvedNext]);
 
   async function handleSubmit(e: React.FormEvent) {
@@ -50,14 +64,31 @@ function LoginPageContent() {
     setError("");
     setLoading(true);
 
-    const result = await login(username, password);
-
-    if (result.ok) {
-      router.replace(resolvedNext());
-    } else {
-      setError(result.error ?? t("Login failed"));
+    if (needsCode) {
+      const verified = await verifyVectoreeEmail(email, otp);
       setLoading(false);
+      if (verified.ok) {
+        router.replace(resolvedNext());
+        return;
+      }
+      setError(verified.error ?? t("Login failed"));
+      return;
     }
+
+    const result = creating
+      ? await register(email, password)
+      : await login(email, password);
+
+    setLoading(false);
+    if (!result.ok) {
+      setError(result.error ?? t("Login failed"));
+      return;
+    }
+    if (result.requireEmailVerification) {
+      setNeedsCode(true);
+      return;
+    }
+    router.replace(resolvedNext());
   }
 
   return (
@@ -68,7 +99,11 @@ function LoginPageContent() {
           DeepTutor
         </h1>
         <p className="mt-1 text-sm text-[var(--muted-foreground)]">
-          {t("Sign in to your account")}
+          {needsCode
+            ? t("Enter the 8-digit code sent to your email.")
+            : creating
+              ? t("Create a Vectoree account")
+              : t("Sign in with your Vectoree account")}
         </p>
       </div>
 
@@ -81,6 +116,11 @@ function LoginPageContent() {
 
       {/* Card */}
       <div className="bg-[var(--card)] border border-[var(--border)] rounded-2xl shadow-sm px-8 py-8">
+        {!ready ? (
+          <p className="text-center text-sm text-[var(--muted-foreground)]">
+            {t("Checking Vectoree…")}
+          </p>
+        ) : (
         <form onSubmit={handleSubmit} className="space-y-5">
           {/* Email or username */}
           <div>
@@ -88,15 +128,15 @@ function LoginPageContent() {
               htmlFor="username"
               className="block text-sm font-medium text-[var(--foreground)] mb-1.5"
             >
-              {t("Email or username")}
+              {t("Email")}
             </label>
             <input
               id="username"
-              type="text"
+              type="email"
               autoComplete="username"
               required
-              value={username}
-              onChange={(e) => setUsername(e.target.value)}
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
               className="w-full px-3.5 py-2.5 rounded-lg border border-[var(--border)]
                          bg-[var(--background)] text-[var(--foreground)]
                          placeholder:text-[var(--muted-foreground)]
@@ -112,13 +152,33 @@ function LoginPageContent() {
               htmlFor="password"
               className="block text-sm font-medium text-[var(--foreground)] mb-1.5"
             >
-              {t("Password")}
+              {needsCode ? t("Verification code") : t("Password")}
             </label>
+            {needsCode ? (
+            <input
+              id="otp"
+              inputMode="numeric"
+              autoComplete="one-time-code"
+              required
+              minLength={8}
+              maxLength={8}
+              pattern="\d{8}"
+              value={otp}
+              onChange={(e) => setOtp(e.target.value.replace(/\D/g, "").slice(0, 8))}
+              className="w-full px-3.5 py-2.5 rounded-lg border border-[var(--border)]
+                         bg-[var(--background)] text-[var(--foreground)]
+                         placeholder:text-[var(--muted-foreground)]
+                         focus:outline-none focus:ring-2 focus:ring-[var(--primary)] focus:border-transparent
+                         transition-shadow text-sm"
+              placeholder="00000000"
+            />
+            ) : (
             <input
               id="password"
               type="password"
-              autoComplete="current-password"
+              autoComplete={creating ? "new-password" : "current-password"}
               required
+              minLength={creating ? 8 : 1}
               value={password}
               onChange={(e) => setPassword(e.target.value)}
               className="w-full px-3.5 py-2.5 rounded-lg border border-[var(--border)]
@@ -128,6 +188,7 @@ function LoginPageContent() {
                          transition-shadow text-sm"
               placeholder="••••••••"
             />
+            )}
           </div>
 
           {/* Error message */}
@@ -147,20 +208,48 @@ function LoginPageContent() {
                        disabled:opacity-50 disabled:cursor-not-allowed
                        transition-opacity"
           >
-            {loading ? t("Signing in…") : t("Sign in")}
+            {loading
+              ? t("Signing in…")
+              : needsCode
+                ? t("Sign in")
+                : creating
+                  ? t("Create account")
+                  : t("Sign in")}
           </button>
+          {needsCode && (
+            <button
+              type="button"
+              disabled={loading}
+              onClick={() => {
+                setError("");
+                void resendVectoreeCode(email).then((resent) => {
+                  if (!resent.ok) setError(resent.error ?? t("Login failed"));
+                });
+              }}
+              className="w-full py-2.5 px-4 rounded-lg font-medium text-sm border border-[var(--border)] text-[var(--foreground)] hover:bg-[var(--muted)] disabled:opacity-50"
+            >
+              {t("Resend code")}
+            </button>
+          )}
         </form>
+        )}
       </div>
 
+      {ready && !needsCode && (
       <p className="mt-6 text-center text-sm text-[var(--muted-foreground)]">
-        {t("Don't have an account?")}{" "}
-        <Link
-          href="/register"
+        {creating ? t("Already have an account?") : t("Don't have an account?")}{" "}
+        <button
+          type="button"
+          onClick={() => {
+            setCreating((value) => !value);
+            setError("");
+          }}
           className="text-[var(--primary)] hover:underline font-medium"
         >
-          {t("Create one")}
-        </Link>
+          {creating ? t("Sign in") : t("Create one")}
+        </button>
       </p>
+      )}
 
       <p className="mt-3 text-center text-xs text-[var(--muted-foreground)]">
         {t("DeepTutor · Agent-Native Learning")}

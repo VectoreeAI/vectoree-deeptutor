@@ -4,7 +4,7 @@ import { useState, useEffect } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { useTranslation } from "react-i18next";
-import { register, checkIsFirstUser, fetchAuthStatus } from "@/lib/auth";
+import { fetchVectoreeSession, register, checkIsFirstUser, fetchAuthStatus } from "@/lib/auth";
 
 export default function RegisterPage() {
   const { t } = useTranslation();
@@ -19,9 +19,14 @@ export default function RegisterPage() {
   const [checkingFirst, setCheckingFirst] = useState(true);
 
   useEffect(() => {
-    // Redirect if already logged in
-    fetchAuthStatus().then((status) => {
-      if (status?.authenticated) router.replace("/");
+    fetchVectoreeSession().then((session) => {
+      if (session?.linked) {
+        router.replace(session.authenticated ? "/" : "/login");
+        return;
+      }
+      fetchAuthStatus().then((status) => {
+        if (status?.authenticated) router.replace("/");
+      });
     });
 
     // Check if this will be the first (admin) user

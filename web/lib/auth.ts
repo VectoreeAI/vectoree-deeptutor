@@ -83,10 +83,29 @@ export function fetchAuthStatus(): Promise<AuthStatus | null> {
 /**
  * POST credentials to the backend. Returns true on success.
  */
+export interface VectoreeSession {
+  linked: boolean;
+  authenticated: boolean;
+}
+
+export function fetchVectoreeSession(): Promise<VectoreeSession | null> {
+  return apiFetch(apiUrl("/api/auth/vectoree/session"))
+    .then(async (res) => {
+      if (!res.ok) return null;
+      const body = (await res.json()) as VectoreeSession;
+      if (!body || typeof body.linked !== "boolean") return null;
+      return {
+        linked: body.linked,
+        authenticated: body.authenticated === true,
+      };
+    })
+    .catch(() => null);
+}
+
 export async function login(
   username: string,
   password: string,
-): Promise<{ ok: boolean; error?: string }> {
+): Promise<{ ok: boolean; error?: string; requireEmailVerification?: boolean }> {
   try {
     const res = await apiFetch(apiUrl("/api/auth/login"), {
       method: "POST",
@@ -99,7 +118,13 @@ export async function login(
 
     if (res.ok) {
       invalidateAuthStatusCache();
-      return { ok: true };
+      const body = (await res.clone().json().catch(() => ({}))) as {
+        require_email_verification?: boolean;
+      };
+      return {
+        ok: true,
+        requireEmailVerification: body.require_email_verification === true,
+      };
     }
 
     const data = await res.json().catch(() => ({}));
@@ -127,6 +152,46 @@ function extractDetail(detail: unknown): string {
 /**
  * Register a new account. The first user to register becomes admin.
  */
+export async function verifyVectoreeEmail(
+  email: string,
+  otp: string,
+): Promise<{ ok: boolean; error?: string }> {
+  try {
+    const res = await apiFetch(apiUrl("/api/auth/vectoree/verify"), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ email, otp }),
+      skipAuthRedirect: true,
+    });
+    if (res.ok) {
+      invalidateAuthStatusCache();
+      return { ok: true };
+    }
+    const data = await res.json().catch(() => ({}));
+    return { ok: false, error: extractDetail(data.detail) };
+  } catch {
+    return { ok: false, error: "Could not reach the server" };
+  }
+}
+
+export async function resendVectoreeCode(
+  email: string,
+): Promise<{ ok: boolean; error?: string }> {
+  try {
+    const res = await apiFetch(apiUrl("/api/auth/vectoree/resend"), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ email }),
+      skipAuthRedirect: true,
+    });
+    if (res.ok) return { ok: true };
+    const data = await res.json().catch(() => ({}));
+    return { ok: false, error: extractDetail(data.detail) };
+  } catch {
+    return { ok: false, error: "Could not reach the server" };
+  }
+}
+
 export async function register(
   username: string,
   password: string,
@@ -135,6 +200,7 @@ export async function register(
   role?: string;
   is_first_user?: boolean;
   error?: string;
+  requireEmailVerification?: boolean;
 }> {
   try {
     const res = await apiFetch(apiUrl("/api/auth/register"), {
@@ -149,7 +215,12 @@ export async function register(
     const data = await res.json().catch(() => ({}));
     if (res.ok) {
       invalidateAuthStatusCache();
-      return { ok: true, role: data.role, is_first_user: data.is_first_user };
+      return {
+        ok: true,
+        role: data.role,
+        is_first_user: data.is_first_user,
+        requireEmailVerification: data.require_email_verification === true,
+      };
     }
     return { ok: false, error: extractDetail(data.detail) };
   } catch {

@@ -77,6 +77,7 @@ from deeptutor.services.auth import (
     authenticate_pb,
     create_token,
     decode_token,
+    ensure_auth_secret,
     delete_user,
     get_user_info,
     is_first_user,
@@ -206,6 +207,15 @@ class DeviceCredentialCreateRequest(BaseModel):
     device_name: str = Field(min_length=1, max_length=80)
     expires_in_days: int = Field(ge=1, le=365)
     daily_limit_minutes: int = Field(ge=5, le=1440)
+
+
+class VectoreeVerifyRequest(BaseModel):
+    email: str = Field(min_length=3, max_length=320)
+    otp: str = Field(min_length=8, max_length=8)
+
+
+class VectoreeResendRequest(BaseModel):
+    email: str = Field(min_length=3, max_length=320)
 
 
 class RegisterRequest(BaseModel):
@@ -761,9 +771,75 @@ async def auth_status(
     )
 
 
+async def _vectoree_password_login(
+    action: str,
+    email: str,
+    password: str,
+    request: Request,
+    response: Response,
+) -> dict | None:
+    """Proxy to Vectoree when a project key is linked. None keeps local auth."""
+
+    from deeptutor.services.vectoree_link.app_auth import (
+        proxy_vectoree_auth,
+        provision_local_user,
+        resolve_vectoree_app_link,
+    )
+
+    link = resolve_vectoree_app_link()
+    if link is None:
+        return None
+    _require_private_frontend(request)
+    try:
+        result = await proxy_vectoree_auth(
+            link,
+            action,
+            {"email": email, "password": password},
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    if result.kind == "verify":
+        _no_store(response)
+        return {
+            "ok": True,
+            "require_email_verification": True,
+            "message": result.message,
+        }
+    if result.kind != "session" or not result.email:
+        raise HTTPException(
+            status_code=result.http_status if result.http_status in {400, 401, 502} else 401,
+            detail=result.message or "Incorrect email or password",
+        )
+    user = provision_local_user(result.email)
+    ensure_auth_secret()
+    token = create_token(user.username, user.role, user.user_id)
+    _no_store(response)
+    response.set_cookie(value=token, max_age=_COOKIE_MAX_AGE, **_cookie_attrs())
+    return {
+        "ok": True,
+        "user_id": user.user_id,
+        "username": user.username,
+        "role": user.role,
+        "is_admin": user.role == "admin",
+    }
+
+
 @router.post("/login")
 async def login(body: LoginRequest, request: Request, response: Response) -> dict:
-    """Validate credentials and set a JWT cookie."""
+    """Validate credentials and set a JWT cookie.
+
+    A linked Vectoree project handles the password. DeepTutor still issues
+    its own cookie and does not return the Vectoree user token.
+    """
+    proxied = await _vectoree_password_login(
+        "login",
+        body.username,
+        body.password,
+        request,
+        response,
+    )
+    if proxied is not None:
+        return proxied
     if not AUTH_ENABLED:
         return {"ok": True, "message": "Auth is disabled — no login required."}
 
@@ -1059,6 +1135,89 @@ async def device_heartbeat(
     return {"ok": not device.pop("limit_reached"), **device}
 
 
+@router.get("/vectoree/session")
+async def vectoree_session(
+    dt_token: str | None = Cookie(default=None, alias=_COOKIE_NAME),
+) -> dict:
+    """Whether this install is linked and the browser holds a DeepTutor session."""
+
+    from deeptutor.services.vectoree_link.app_auth import resolve_vectoree_app_link
+
+    if resolve_vectoree_app_link() is None:
+        return {"linked": False, "authenticated": False}
+    if not dt_token:
+        return {"linked": True, "authenticated": False}
+    ensure_auth_secret()
+    payload = decode_token(dt_token)
+    return {"linked": True, "authenticated": payload is not None}
+
+
+@router.post("/vectoree/verify")
+async def vectoree_verify(
+    body: VectoreeVerifyRequest,
+    request: Request,
+    response: Response,
+) -> dict:
+    """Confirm the 8-digit Vectoree email code and issue a DeepTutor session."""
+
+    from deeptutor.services.vectoree_link.app_auth import (
+        proxy_vectoree_auth,
+        provision_local_user,
+        resolve_vectoree_app_link,
+    )
+
+    link = resolve_vectoree_app_link()
+    if link is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Link a Vectoree project first",
+        )
+    _require_private_frontend(request)
+    try:
+        result = await proxy_vectoree_auth(link, "verify", {"email": body.email, "otp": body.otp})
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    if result.kind != "session" or not result.email:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=result.message or "Invalid verification code",
+        )
+    user = provision_local_user(result.email)
+    ensure_auth_secret()
+    token = create_token(user.username, user.role, user.user_id)
+    _no_store(response)
+    response.set_cookie(value=token, max_age=_COOKIE_MAX_AGE, **_cookie_attrs())
+    return {
+        "ok": True,
+        "user_id": user.user_id,
+        "username": user.username,
+        "role": user.role,
+        "is_admin": user.role == "admin",
+    }
+
+
+@router.post("/vectoree/resend")
+async def vectoree_resend(body: VectoreeResendRequest, request: Request) -> dict:
+    """Ask Vectoree to send another email code. No project key is returned."""
+
+    from deeptutor.services.vectoree_link.app_auth import (
+        proxy_vectoree_auth,
+        resolve_vectoree_app_link,
+    )
+
+    link = resolve_vectoree_app_link()
+    if link is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Link a Vectoree project first",
+        )
+    _require_private_frontend(request)
+    result = await proxy_vectoree_auth(link, "resend", {"email": body.email})
+    if result.kind == "error":
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=result.message)
+    return {"ok": True}
+
+
 @router.post("/logout")
 async def logout(response: Response) -> dict:
     """Clear the JWT cookie.
@@ -1079,8 +1238,18 @@ async def register(body: RegisterRequest, request: Request, response: Response) 
     is empty. Once an admin exists, this endpoint is closed; further accounts
     must be created by an admin via ``POST /api/auth/users``.
 
-    Only available when AUTH_ENABLED=true.
+    Only available when AUTH_ENABLED=true, unless a Vectoree project is linked.
+    Vectoree then owns registration and DeepTutor issues the session cookie.
     """
+    proxied = await _vectoree_password_login(
+        "register",
+        body.username,
+        body.password,
+        request,
+        response,
+    )
+    if proxied is not None:
+        return proxied
     if not AUTH_ENABLED:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,

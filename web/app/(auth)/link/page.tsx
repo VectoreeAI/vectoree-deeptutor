@@ -30,13 +30,12 @@ export default function VectoreeLinkPage() {
     let cancelled = false;
     fetchVectoreeLinkStatus().then((status) => {
       if (cancelled || !status?.linked) return;
-      setProjectName(status.projectName ?? "");
-      setPhase("linked");
+      router.replace("/login");
     });
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [router]);
 
   useEffect(() => {
     if (phase !== "pending") return;
@@ -103,16 +102,14 @@ export default function VectoreeLinkPage() {
                 : t("Vectoree is linked.")}
             </p>
             <p className="text-sm text-[var(--muted-foreground)]">
-              {t(
-                "If chat still uses the previous model, restart DeepTutor so it reloads the catalog.",
-              )}
+              {t("Sign in with the Vectoree account for this project. DeepTutor keeps its own session.")}
             </p>
             <button
               type="button"
-              onClick={() => router.push("/chat")}
+              onClick={() => router.push("/login")}
               className="w-full py-2.5 px-4 rounded-lg font-medium text-sm bg-[var(--primary)] text-[var(--primary-foreground)] hover:opacity-90"
             >
-              {t("Continue to chat")}
+              {t("Continue to sign in")}
             </button>
           </div>
         ) : (
