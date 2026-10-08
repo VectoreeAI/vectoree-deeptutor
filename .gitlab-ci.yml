@@ -36,6 +36,7 @@ test:
     PYTHONPATH: $CI_PROJECT_DIR
     PYTHONIOENCODING: utf-8
   before_script:
+    - apt-get update -qq && apt-get install -y -qq --no-install-recommends git shared-mime-info ca-certificates >/dev/null
     - python -m pip install --upgrade pip
     - python -m pip install -r requirements/server.txt
     - python -m pip install -r requirements/partners.txt
