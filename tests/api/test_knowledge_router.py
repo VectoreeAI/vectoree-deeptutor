@@ -33,6 +33,14 @@ except Exception:  # pragma: no cover - optional dependency in lightweight envs
     FastAPI = None
     TestClient = None
 
+try:
+    from fastapi.routing import iter_route_contexts
+except Exception:  # pragma: no cover - FastAPI before included-router contexts
+
+    def iter_route_contexts(routes):  # type: ignore[misc]
+        return routes
+
+
 pytestmark = pytest.mark.skipif(
     FastAPI is None or TestClient is None, reason="fastapi not installed"
 )
@@ -94,7 +102,11 @@ def test_learner_surface_uses_actual_kb_route_template(
 ) -> None:
     app = _build_app()
     scope = {"type": "http", "method": "GET", "path": path, "root_path": ""}
-    matched = next(route for route in app.router.routes if route.matches(scope)[0] is Match.FULL)
+    matched = next(
+        route
+        for route in iter_route_contexts(app.router.routes)
+        if route.matches(scope)[0] is Match.FULL and route.path
+    )
     assert matched.path == route_path
     assert _learning_surface_for_path(path, "GET", route_path=matched.path) == surface
 

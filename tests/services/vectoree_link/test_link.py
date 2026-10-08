@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 import json
+import os
 from pathlib import Path
 import stat
 from typing import Any
@@ -145,6 +146,8 @@ def test_project_root_defaults_to_cwd_data(tmp_path: Path, monkeypatch: pytest.M
 
 
 def test_read_only_root_is_a_clear_error(tmp_path: Path) -> None:
+    if hasattr(os, "geteuid") and os.geteuid() == 0:
+        pytest.skip("root bypasses directory mode bits")
     frozen = tmp_path / "frozen"
     frozen.mkdir()
     frozen.chmod(0o555)
