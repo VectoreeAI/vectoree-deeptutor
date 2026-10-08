@@ -89,6 +89,8 @@ def test_ensure_unwritable_directory_fail_fasts(tmp_path: Path) -> None:
 
 
 def test_check_container_data_volume_probes_knowledge_bases(tmp_path: Path, monkeypatch) -> None:
+    if hasattr(os, "geteuid") and os.geteuid() == 0:
+        pytest.skip("root drops to PUID and cannot read pytest's private tmp")
     data_root = tmp_path / "app-data"
     monkeypatch.setenv("PUID", "1000")
     monkeypatch.setenv("PGID", "1000")

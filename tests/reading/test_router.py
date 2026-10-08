@@ -7,6 +7,7 @@ boot every other router; the routes themselves are the real ones.
 from __future__ import annotations
 
 import io
+import mimetypes
 from pathlib import Path
 import zipfile
 
@@ -351,7 +352,8 @@ def test_epub_contract_exposes_source_refs_original_and_position(client: TestCli
     ]
     raw = client.get(f"/api/reading/materials/{material['material_id']}/raw")
     assert raw.status_code == 200
-    assert raw.headers["content-type"] == "application/epub+zip"
+    expected_type = mimetypes.guess_type("book.epub")[0] or "application/octet-stream"
+    assert raw.headers["content-type"] == expected_type
 
     base = f"/api/reading/materials/{material['material_id']}/position"
     saved = client.put(

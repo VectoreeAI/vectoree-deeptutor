@@ -278,9 +278,9 @@ def _backend() -> str:
 def _shared_source_blockers(source_id: str, selected: set[str]) -> list[str]:
     """The admin default catalogue remains the canonical shared resource store."""
     from deeptutor.multi_user.context import get_current_user
-    from deeptutor.services.auth import AUTH_ENABLED
+    from deeptutor.services.auth import auth_required
 
-    if source_id or not AUTH_ENABLED or not get_current_user().is_admin:
+    if source_id or not auth_required() or not get_current_user().is_admin:
         return []
     from deeptutor.multi_user.book_permission import normalize_book_permission
     from deeptutor.multi_user.grants import load_grant

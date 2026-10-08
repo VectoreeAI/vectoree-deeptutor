@@ -251,9 +251,9 @@ class PauseBookRequest(BaseModel):
 
 
 def _auth_enabled() -> bool:
-    from deeptutor.services.auth import AUTH_ENABLED
+    from deeptutor.services.auth import auth_required
 
-    return bool(AUTH_ENABLED)
+    return auth_required()
 
 
 def _resolve_book_or_404(

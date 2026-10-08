@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import mimetypes
 from pathlib import Path
 import zipfile
 
 import pytest
+
+_PPTX_MIME = "application/vnd.openxmlformats-officedocument.presentationml.presentation"
 
 from deeptutor.services.path_service import PathService
 from deeptutor.services.sandbox.backends import RestrictedSubprocessBackend
@@ -40,6 +43,10 @@ def test_pptx_dependency_is_packaged_for_pip_source_and_docker_runner() -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.skipif(
+    mimetypes.guess_type("deck.pptx")[0] != _PPTX_MIME,
+    reason="system MIME database is not installed",
+)
 async def test_real_pptx_exec_stays_in_outputs_and_is_presented(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

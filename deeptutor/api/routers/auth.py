@@ -66,6 +66,7 @@ from deeptutor.multi_user.session_handoff import (
     is_loopback_host,
     public_origin,
 )
+from deeptutor.services import auth as auth_service
 from deeptutor.services.auth import (
     AUTH_ENABLED,
     POCKETBASE_ENABLED,
@@ -77,8 +78,8 @@ from deeptutor.services.auth import (
     authenticate_pb,
     create_token,
     decode_token,
-    ensure_auth_secret,
     delete_user,
+    ensure_auth_secret,
     get_user_info,
     is_first_user,
     list_users,
@@ -405,6 +406,12 @@ def _extract_token(authorization: str | None, dt_token: str | None) -> str | Non
 # ---------------------------------------------------------------------------
 
 
+def _auth_required() -> bool:
+    """Built-in auth, or a linked Vectoree project with per-account sign-in."""
+
+    return AUTH_ENABLED or auth_service.vectoree_login_active()
+
+
 def _install_current_user(payload: TokenPayload | None) -> _CtxToken:
     """Install the request-local current-user ContextVar from an auth result.
 
@@ -432,7 +439,8 @@ async def require_auth(
     request: Request = None,
 ) -> TokenPayload | None:
     """
-    FastAPI dependency that enforces authentication when AUTH_ENABLED=true.
+    FastAPI dependency that enforces authentication when AUTH_ENABLED=true
+    or a Vectoree project is linked.
 
     Accepts the JWT from either:
       - Authorization: Bearer <token> header
@@ -453,7 +461,7 @@ async def require_auth(
     endpoint to read the unset default. That regression was the root cause
     of #481.
     """
-    if not AUTH_ENABLED:
+    if not _auth_required():
         _install_current_user(None)
         _install_request_workspace(request)
         return None
@@ -564,7 +572,7 @@ async def ws_require_auth(ws: WebSocket) -> _CtxToken | _WsAuthFailed:
             reset_current_user(user_token)
     """
     payload = None
-    if AUTH_ENABLED:
+    if _auth_required():
         token = ws.query_params.get("token") or ws.cookies.get(_COOKIE_NAME)
         payload = decode_token(token) if token else None
         if not payload:
@@ -593,7 +601,7 @@ async def require_admin(
     the event loop and the user ContextVar set by ``require_auth`` is visible
     to the endpoint.
     """
-    if not AUTH_ENABLED:
+    if not _auth_required():
         return _local_admin_token_payload()
 
     if payload is None or payload.role != "admin":
@@ -722,7 +730,7 @@ async def auth_status(
     dt_token: str | None = Cookie(default=None, alias=_COOKIE_NAME),
 ) -> AuthStatusResponse:
     """Return whether auth is enabled and whether the current request is authenticated."""
-    if not AUTH_ENABLED:
+    if not _auth_required():
         return AuthStatusResponse(
             enabled=False,
             authenticated=True,
@@ -771,6 +779,15 @@ async def auth_status(
     )
 
 
+def _provision_vectoree_user(provision, result) -> TokenPayload:
+    from deeptutor.multi_user.identity import VectoreeIdentityConflict
+
+    try:
+        return provision(result)
+    except VectoreeIdentityConflict as exc:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
+
+
 async def _vectoree_password_login(
     action: str,
     email: str,
@@ -781,8 +798,8 @@ async def _vectoree_password_login(
     """Proxy to Vectoree when a project key is linked. None keeps local auth."""
 
     from deeptutor.services.vectoree_link.app_auth import (
-        proxy_vectoree_auth,
         provision_local_user,
+        proxy_vectoree_auth,
         resolve_vectoree_app_link,
     )
 
@@ -810,7 +827,7 @@ async def _vectoree_password_login(
             status_code=result.http_status if result.http_status in {400, 401, 502} else 401,
             detail=result.message or "Incorrect email or password",
         )
-    user = provision_local_user(result.email)
+    user = _provision_vectoree_user(provision_local_user, result)
     ensure_auth_secret()
     token = create_token(user.username, user.role, user.user_id)
     _no_store(response)
@@ -1161,8 +1178,8 @@ async def vectoree_verify(
     """Confirm the 8-digit Vectoree email code and issue a DeepTutor session."""
 
     from deeptutor.services.vectoree_link.app_auth import (
-        proxy_vectoree_auth,
         provision_local_user,
+        proxy_vectoree_auth,
         resolve_vectoree_app_link,
     )
 
@@ -1182,7 +1199,7 @@ async def vectoree_verify(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=result.message or "Invalid verification code",
         )
-    user = provision_local_user(result.email)
+    user = _provision_vectoree_user(provision_local_user, result)
     ensure_auth_secret()
     token = create_token(user.username, user.role, user.user_id)
     _no_store(response)
@@ -1349,7 +1366,7 @@ def _sniff_image(data: bytes) -> str | None:
 
 def _require_profile_identity(payload: TokenPayload | None) -> TokenPayload:
     """Shared guard for the self-service profile endpoints."""
-    if not AUTH_ENABLED or payload is None:
+    if not _auth_required() or payload is None:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Auth is disabled — profiles are not available.",

@@ -73,6 +73,27 @@ def ensure_auth_secret() -> str:
     return AUTH_SECRET
 
 
+def vectoree_login_active() -> bool:
+    """True when a linked Vectoree project owns sign-in.
+
+    Every Vectoree account then gets its own DeepTutor identity, so requests
+    must carry a session even when ``AUTH_ENABLED`` is false.
+    """
+
+    from deeptutor.services.vectoree_link.app_auth import resolve_vectoree_app_link
+
+    if resolve_vectoree_app_link() is None:
+        return False
+    ensure_auth_secret()
+    return True
+
+
+def auth_required() -> bool:
+    """Whether requests must authenticate as a specific account."""
+
+    return AUTH_ENABLED or vectoree_login_active()
+
+
 # ---------------------------------------------------------------------------
 # Token payload
 # ---------------------------------------------------------------------------

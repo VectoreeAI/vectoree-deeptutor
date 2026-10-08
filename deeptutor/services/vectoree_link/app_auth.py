@@ -7,7 +7,7 @@ to decide whether a DeepTutor session may be issued; they are not returned.
 from __future__ import annotations
 
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import json
 import os
 from pathlib import Path
@@ -17,7 +17,7 @@ from typing import Any, Literal
 
 import httpx
 
-from deeptutor.services.auth import TokenPayload, add_user
+from deeptutor.services.auth import TokenPayload, hash_password
 
 from .credentials import read_config, read_env_file, usable_api_key
 from .root import resolve_project_root
@@ -45,6 +45,9 @@ class AuthProxyResult:
     http_status: int
     email: str | None = None
     message: str = ""
+    subject: str | None = None
+    issuer: str | None = None
+    email_verified: bool = True
 
 
 def resolve_vectoree_app_link(
@@ -124,26 +127,33 @@ async def proxy_vectoree_auth(
                 message="Could not resend the code",
             )
         return AuthProxyResult(kind="ok", http_status=200, message="ok")
-    return _interpret(action, response.status_code, data)
+    result = _interpret(action, response.status_code, data)
+    if result.kind == "session":
+        return replace(result, issuer=link.api_url)
+    return result
 
 
-def provision_local_user(email: str) -> TokenPayload:
-    """Reuse or create a DeepTutor account after Vectoree accepts the email.
+def provision_local_user(result: AuthProxyResult) -> TokenPayload:
+    """Return the DeepTutor account bound to the Vectoree user in ``result``.
 
     The Vectoree password is not stored. A random hash keeps local password
     login from accepting that same password if the project is later unlinked.
+    Raises ``VectoreeIdentityConflict`` when the account belongs to someone else.
     """
 
-    from deeptutor.multi_user.identity import get_user
+    from deeptutor.multi_user.identity import claim_vectoree_account
 
-    existing = get_user(email)
-    if existing is None:
-        add_user(email, secrets.token_urlsafe(32))
-        existing = get_user(email) or {}
+    username, record = claim_vectoree_account(
+        str(result.email or ""),
+        issuer=str(result.issuer or ""),
+        subject=str(result.subject or ""),
+        email_verified=result.email_verified,
+        new_password_hash=hash_password(secrets.token_urlsafe(32)),
+    )
     return TokenPayload(
-        username=email,
-        role=str(existing.get("role") or "user"),
-        user_id=str(existing.get("id") or ""),
+        username=username,
+        role=str(record.get("role") or "user"),
+        user_id=str(record.get("id") or ""),
     )
 
 
@@ -155,8 +165,15 @@ def _interpret(action: str, status: int, data: Any) -> AuthProxyResult:
             message="Enter the 8-digit code sent to your email.",
         )
     email = _read_email(data)
-    if 200 <= status < 300 and email and _has_access_token(data):
-        return AuthProxyResult(kind="session", http_status=200, email=email)
+    subject = _read_user_field(data, "id")
+    if 200 <= status < 300 and email and subject and _has_access_token(data):
+        return AuthProxyResult(
+            kind="session",
+            http_status=200,
+            email=email,
+            subject=subject,
+            email_verified=_read_email_verified(data),
+        )
     if action == "login":
         return AuthProxyResult(
             kind="error",
@@ -191,21 +208,32 @@ def _needs_verification(status: int, data: Any) -> bool:
 
 
 def _has_access_token(data: Any) -> bool:
-    return isinstance(data, dict) and isinstance(data.get("accessToken"), str) and bool(
-        data.get("accessToken")
+    return (
+        isinstance(data, dict)
+        and isinstance(data.get("accessToken"), str)
+        and bool(data.get("accessToken"))
     )
 
 
 def _read_email(data: Any) -> str | None:
+    return _read_user_field(data, "email")
+
+
+def _read_user_field(data: Any, key: str) -> str | None:
     if not isinstance(data, dict):
         return None
     user = data.get("user")
     if not isinstance(user, dict):
         return None
-    email = user.get("email")
-    if isinstance(email, str) and email.strip():
-        return email.strip()
+    value = user.get(key)
+    if isinstance(value, str) and value.strip():
+        return value.strip()
     return None
+
+
+def _read_email_verified(data: Any) -> bool:
+    user = data.get("user") if isinstance(data, dict) else None
+    return not (isinstance(user, dict) and user.get("emailVerified") is False)
 
 
 def _read_json(response: httpx.Response) -> Any:
