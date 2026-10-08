@@ -580,8 +580,8 @@ app.include_router(
     tags=["workspace"],
 )
 
-# All other routers require a valid session when AUTH_ENABLED=true.
-# require_auth is a no-op when AUTH_ENABLED=false, so this is safe for local use.
+# All other routers require a valid session when AUTH_ENABLED=true or a
+# Vectoree project is linked. Otherwise require_auth is a no-op for local use.
 from deeptutor.api.routers.auth import (  # noqa: E402
     require_admin,
     require_auth,

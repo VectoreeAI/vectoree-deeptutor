@@ -91,6 +91,18 @@ def _guard_legacy_multi_user_migration(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _isolate_vectoree_link(monkeypatch):
+    """A developer's linked ``data/.vectoree`` must not turn auth on in tests.
+
+    Tests that exercise Vectoree sign-in patch this back themselves.
+    """
+    from deeptutor.services import auth as auth_service
+
+    monkeypatch.setattr(auth_service, "vectoree_login_active", lambda: False)
+    yield
+
+
+@pytest.fixture(autouse=True)
 def _isolate_codebuddy_login(monkeypatch):
     """Hide the developer's real CodeBuddy session from every test.
 

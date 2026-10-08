@@ -290,3 +290,7 @@ dmypy.json
 prompts/
 deploy-local.sh
 .cursorrules
+.cursor
+.agent
+.agents
+openspec

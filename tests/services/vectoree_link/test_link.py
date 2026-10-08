@@ -322,6 +322,7 @@ def test_http_status_and_poll_never_return_the_key(tmp_path: Path) -> None:
     linker = VectoreeLinker(root=tmp_path, env={}, catalog=service, open_url=lambda _url: None)
     reset_linker(linker)
     app = FastAPI()
+    app.include_router(public_router, prefix="/api/vectoree")
     app.include_router(router, prefix="/api/vectoree")
     try:
         client = TestClient(app)

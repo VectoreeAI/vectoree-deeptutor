@@ -32,7 +32,8 @@ logger = logging.getLogger(__name__)
 # process FastAPI deployments (the ``deeptutor start`` launcher) are fully covered;
 # multi-worker deployments still race and must rely on an external user store
 # (e.g. PocketBase), which is documented in the multi-user README.
-_USERS_WRITE_LOCK = threading.Lock()
+# Re-entrant so ``claim_vectoree_account`` can create through ``save_user``.
+_USERS_WRITE_LOCK = threading.RLock()
 
 AUTH_DIR = SYSTEM_ROOT / "auth"
 USERS_FILE = AUTH_DIR / "users.json"
@@ -86,7 +87,20 @@ def _canonical_record(
         record["book_permission"] = canonical_book_permission(value.get("book_permission"))
     if "learner_profile" in value:
         record["learner_profile"] = normalize_profile(value.get("learner_profile"))
+    vectoree = _vectoree_binding(value.get("vectoree"))
+    if vectoree is not None:
+        record["vectoree"] = vectoree
     return record
+
+
+def _vectoree_binding(value: Any) -> dict[str, str] | None:
+    if not isinstance(value, dict):
+        return None
+    issuer = str(value.get("issuer") or "").strip()
+    subject = str(value.get("subject") or "").strip()
+    if not issuer or not subject:
+        return None
+    return {"issuer": issuer, "subject": subject}
 
 
 def _read_json(path: Path) -> dict[str, Any]:
@@ -256,9 +270,73 @@ def save_user(
             "book_permission": canonical_book_permission(existing.get("book_permission")),
             "learner_profile": normalize_profile(existing.get("learner_profile")),
         }
+        if existing.get("vectoree"):
+            record["vectoree"] = existing["vectoree"]
         users[username] = record
         _write_users(users)
     return record
+
+
+class VectoreeIdentityConflict(Exception):
+    """A Vectoree account may not sign in as the matching local account."""
+
+
+def claim_vectoree_account(
+    email: str,
+    *,
+    issuer: str,
+    subject: str,
+    email_verified: bool,
+    new_password_hash: str,
+) -> tuple[str, dict[str, Any]]:
+    """Return the local account bound to one Vectoree user, binding or creating it.
+
+    The binding is the Vectoree ``(issuer, subject)`` pair, not the email, so a
+    different Vectoree account that presents the same email (another project,
+    a relinked issuer, an unverified sign-up) cannot enter an existing account.
+    """
+
+    binding = _vectoree_binding({"issuer": issuer, "subject": subject})
+    if binding is None:
+        raise VectoreeIdentityConflict("Vectoree did not return a user id.")
+    USERS_FILE.parent.mkdir(parents=True, exist_ok=True)
+    with _USERS_WRITE_LOCK:
+        users = load_users()
+        for username, record in users.items():
+            if record.get("vectoree") == binding:
+                _reject_disabled(record)
+                return username, deepcopy(record)
+
+        record = users.get(email)
+        env_username, _ = _env_bootstrap_admin()
+        if record is None and email != env_username:
+            created = save_user(email, new_password_hash)
+            created["vectoree"] = binding
+            users = load_users()
+            users[email] = created
+            _write_users(users)
+            return email, deepcopy(created)
+
+        if record is not None and record.get("vectoree"):
+            raise VectoreeIdentityConflict("This email belongs to a different Vectoree account.")
+        if not email_verified:
+            raise VectoreeIdentityConflict(
+                "Verify this email on Vectoree before signing in to an existing account."
+            )
+        if record is None:
+            # Adopt the env bootstrap admin into the store so it can hold a binding.
+            record = save_user(email, new_password_hash, role="admin")
+            users = load_users()
+        _reject_disabled(record)
+        record["vectoree"] = binding
+        users[email] = record
+        _write_users(users)
+        return email, deepcopy(record)
+
+
+def _reject_disabled(record: dict[str, Any]) -> None:
+    if record.get("disabled"):
+        raise VectoreeIdentityConflict("This account is disabled.")
 
 
 def list_user_info(  # nosec B107 - empty defaults mean "no env fallback supplied".

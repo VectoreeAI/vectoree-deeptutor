@@ -6,7 +6,8 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, Field
 
-from deeptutor.services.vectoree_link import VectoreeLinkError, get_linker
+from deeptutor.multi_user.context import get_current_user
+from deeptutor.services.vectoree_link import VectoreeLinkError, app_auth, get_linker
 
 router = APIRouter()
 public_router = APIRouter()
@@ -29,18 +30,26 @@ class VectoreeLinkStart(BaseModel):
     publicOrigin: str | None = None
 
 
-@router.get("/link-status")
+# Status and poll stay public: once a link completes, auth turns on, and the
+# unauthenticated /link page must still see the result to move on to /login.
+@public_router.get("/link-status")
 async def vectoree_link_status() -> dict[str, object]:
     return get_linker().status()
 
 
-@router.get("/link")
+@public_router.get("/link")
 async def vectoree_link_poll() -> dict[str, object]:
     return get_linker().snapshot()
 
 
 @router.post("/link/start")
 async def vectoree_link_start(body: VectoreeLinkStart) -> dict[str, object]:
+    # Relinking swaps the sign-in authority for every account.
+    if app_auth.resolve_vectoree_app_link() is not None and not get_current_user().is_admin:
+        raise HTTPException(
+            status_code=403,
+            detail="Only an administrator can relink Vectoree.",
+        )
     try:
         return get_linker().start(
             api_url=body.apiUrl,

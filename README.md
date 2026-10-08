@@ -390,6 +390,8 @@ docker compose up -d
 
 Open [http://127.0.0.1:3782](http://127.0.0.1:3782). Until the install is linked, the app opens `/link`. After a Vectoree project is connected, chat uses that gateway and defaults to `vectoree/auto`. The browser login returns to `http://127.0.0.1:3782/api/vectoree/link/callback` on the published frontend port. Podman: `podman compose -f compose.yaml up -d --build`.
 
+Once linked, every request needs a DeepTutor session, even with `AUTH_ENABLED=false`. Each Vectoree account signs in to its own DeepTutor account and workspace (`data/users/<id>/`); the first account becomes the admin. Accounts are bound to the Vectoree user id, not the email. An existing local account with the same email is bound on first sign-in only when Vectoree reports that email as verified, and a different Vectoree account (another project, or another API origin) cannot sign in to it. After the first link, only an admin can relink the project.
+
 Images on GitHub Container Registry (upstream DeepTutor, without this fork's Link flow):
 
 - `ghcr.io/hkuds/deeptutor:latest` — latest stable release
