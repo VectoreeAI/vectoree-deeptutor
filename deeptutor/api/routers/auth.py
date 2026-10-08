@@ -78,8 +78,8 @@ from deeptutor.services.auth import (
     authenticate_pb,
     create_token,
     decode_token,
-    ensure_auth_secret,
     delete_user,
+    ensure_auth_secret,
     get_user_info,
     is_first_user,
     list_users,
@@ -798,8 +798,8 @@ async def _vectoree_password_login(
     """Proxy to Vectoree when a project key is linked. None keeps local auth."""
 
     from deeptutor.services.vectoree_link.app_auth import (
-        proxy_vectoree_auth,
         provision_local_user,
+        proxy_vectoree_auth,
         resolve_vectoree_app_link,
     )
 
@@ -1178,8 +1178,8 @@ async def vectoree_verify(
     """Confirm the 8-digit Vectoree email code and issue a DeepTutor session."""
 
     from deeptutor.services.vectoree_link.app_auth import (
-        proxy_vectoree_auth,
         provision_local_user,
+        proxy_vectoree_auth,
         resolve_vectoree_app_link,
     )
 

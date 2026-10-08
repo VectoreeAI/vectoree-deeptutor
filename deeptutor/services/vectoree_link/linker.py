@@ -596,4 +596,3 @@ def _safe_catalog(service: ModelCatalogService) -> dict[str, Any] | None:
         logger.info("Vectoree link status could not read the model catalog")
         return None
     return loaded if isinstance(loaded, dict) else None
-

@@ -8,6 +8,7 @@ from pathlib import Path
 import stat
 from typing import Any
 from urllib.parse import parse_qs, urlsplit
+
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 import pytest
@@ -215,8 +216,9 @@ def test_start_mints_a_key_and_poll_hides_it(tmp_path: Path) -> None:
     )
     assert pending["status"] == "pending"
     assert "code_challenge_method=S256" in pending["authorizeUrl"]
-    assert "redirect_uri=http%3A%2F%2F127.0.0.1%3A3782%2Fapi%2Fvectoree%2Flink%2Fcallback" in (
-        pending["authorizeUrl"]
+    assert (
+        "redirect_uri=http%3A%2F%2F127.0.0.1%3A3782%2Fapi%2Fvectoree%2Flink%2Fcallback"
+        in (pending["authorizeUrl"])
     )
     assert API_KEY not in json.dumps(pending)
     _deliver(linker, pending["authorizeUrl"])

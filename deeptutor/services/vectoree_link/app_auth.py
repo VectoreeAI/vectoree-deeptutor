@@ -208,8 +208,10 @@ def _needs_verification(status: int, data: Any) -> bool:
 
 
 def _has_access_token(data: Any) -> bool:
-    return isinstance(data, dict) and isinstance(data.get("accessToken"), str) and bool(
-        data.get("accessToken")
+    return (
+        isinstance(data, dict)
+        and isinstance(data.get("accessToken"), str)
+        and bool(data.get("accessToken"))
     )
 
 
