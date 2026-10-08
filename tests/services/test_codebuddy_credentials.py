@@ -22,14 +22,17 @@ from deeptutor.services.codebuddy_credentials import (
     resolve_api_base,
 )
 
+_EXPIRES_AT_MS = int((time.time() + 30 * 24 * 60 * 60) * 1000)
+_REFRESH_EXPIRES_AT_MS = int((time.time() + 60 * 24 * 60 * 60) * 1000)
+
 
 def _write_auth_file(tmp_path: Path, monkeypatch, **auth_overrides) -> Path:
     auth = {
         "accessToken": "access-token",
         "refreshToken": "refresh-token",
         "tokenType": "Bearer",
-        "expiresAt": 1791055241000,
-        "refreshExpiresAt": 1793647241000,
+        "expiresAt": _EXPIRES_AT_MS,
+        "refreshExpiresAt": _REFRESH_EXPIRES_AT_MS,
         "domain": "www.codebuddy.cn",
     }
     auth.update(auth_overrides)
@@ -53,7 +56,7 @@ def test_load_credentials_parses_session(tmp_path, monkeypatch) -> None:
     assert credentials.user_id == "uid-1"
     assert credentials.user_label == "tester"
     # Epoch milliseconds in the file, seconds in the dataclass.
-    assert credentials.expires_at == pytest.approx(1791055241.0)
+    assert credentials.expires_at == pytest.approx(_EXPIRES_AT_MS / 1000)
     assert credentials.is_expired() is False
 
 

@@ -2,8 +2,13 @@ from __future__ import annotations
 
 import importlib.util
 from pathlib import Path
+import shutil
 import subprocess
 import sys
+
+import pytest
+
+pytestmark = pytest.mark.skipif(shutil.which("git") is None, reason="git is not installed")
 
 
 def _load_update_module():

@@ -1,0 +1,159 @@
+# GitLab CI：合并请求、dev、main 跑测试。push main 时先把推送前的 main 合并进 main-backup，
+# 测试和备份都成功后再把 main 推到 GitHub。不部署测试环境或生产环境。
+# GitHub 只收 main：https://github.com/VectoreeAI/vectoree-deeptutor.git
+#
+# 需要 CI 变量 GITHUB_TOKEN（Masked、Protected，环境范围 All）。
+# main-backup 需要本仓库允许作业令牌推送：Settings → CI/CD → Job token permissions。
+
+workflow:
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH == "dev"
+    - if: $CI_COMMIT_BRANCH == "main"
+    - if: $CI_PIPELINE_SOURCE == "web"
+
+default:
+  tags: [docker]
+  interruptible: true
+
+stages:
+  - .pre
+  - check
+  - publish
+
+test:
+  stage: check
+  image: python:3.12-slim-bookworm
+  services:
+    - redis:7.4-alpine
+  timeout: 45m
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH == "dev"
+    - if: $CI_COMMIT_BRANCH == "main"
+  variables:
+    DEEPTUTOR_TEST_REDIS_URL: redis://redis:6379/0
+    PYTHONPATH: $CI_PROJECT_DIR
+    PYTHONIOENCODING: utf-8
+  before_script:
+    - python -m pip install --upgrade pip
+    - python -m pip install -r requirements/server.txt
+    - python -m pip install -r requirements/partners.txt
+    - python -m pip install pytest pytest-asyncio ruff==0.16.0 import-linter==2.11
+  script:
+    - ruff check .
+    - ruff format --check .
+    - lint-imports
+    - python scripts/check_architecture.py
+    - |
+      mkdir -p data/user/settings
+      cat > data/user/settings/main.yaml <<'YAML'
+      system:
+        language: en
+      logging:
+        level: WARNING
+      YAML
+      cp tests/fixtures/ci_model_catalog.json data/user/settings/model_catalog.json
+    - pytest -q tests deeptutor/learning/tests
+
+backup_main:
+  stage: .pre
+  image: alpine:3.21
+  interruptible: false
+  resource_group: deeptutor-main-backup
+  rules:
+    - if: $CI_COMMIT_BRANCH == "main"
+  variables:
+    GIT_DEPTH: "0"
+  before_script:
+    - apk add --no-cache git ca-certificates
+  script:
+    - |
+      set -eu
+      before="${CI_COMMIT_BEFORE_SHA:-}"
+      empty="0000000000000000000000000000000000000000"
+      if [ -z "$before" ] || [ "$before" = "$empty" ]; then
+        echo "No previous main commit to back up."
+        exit 0
+      fi
+      git config user.email "${GITLAB_USER_EMAIL:-ci@vectoree.space}"
+      git config user.name "${GITLAB_USER_NAME:-GitLab CI}"
+      umask 077
+      askpass="$(mktemp)"
+      printf '%s\n' \
+        '#!/bin/sh' \
+        'case "$1" in' \
+        'Username*) printf "%s\n" "$GIT_ASKPASS_USERNAME" ;;' \
+        '*) printf "%s\n" "$GIT_ASKPASS_PASSWORD" ;;' \
+        'esac' > "$askpass"
+      chmod 700 "$askpass"
+      trap 'rm -f "$askpass"' EXIT
+      export GIT_ASKPASS="$askpass"
+      export GIT_TERMINAL_PROMPT=0
+      export GIT_ASKPASS_USERNAME="gitlab-ci-token"
+      export GIT_ASKPASS_PASSWORD="${CI_JOB_TOKEN}"
+      gitlab_url="https://${CI_SERVER_HOST}/${CI_PROJECT_PATH}.git"
+      git remote set-url origin "$gitlab_url"
+      git -c credential.helper= fetch "$gitlab_url" "$before"
+      if git -c credential.helper= fetch "$gitlab_url" refs/heads/main-backup; then
+        git checkout -B main-backup FETCH_HEAD
+        git merge --no-edit --allow-unrelated-histories "$before" -m "chore: backup main before release"
+      else
+        git checkout -B main-backup "$before"
+      fi
+      git -c credential.helper= push "$gitlab_url" HEAD:refs/heads/main-backup
+      echo "main-backup updated from ${before}"
+
+publish_github:
+  stage: publish
+  image: alpine:3.21
+  interruptible: false
+  resource_group: deeptutor-main-backup
+  needs:
+    - test
+    - backup_main
+  rules:
+    - if: $CI_COMMIT_BRANCH == "main"
+  variables:
+    GIT_DEPTH: "0"
+  before_script:
+    - apk add --no-cache git ca-certificates
+  script:
+    - |
+      set -eu
+      if [ -z "${GITHUB_TOKEN:-}" ]; then
+        echo "Set GITHUB_TOKEN in GitLab CI/CD variables (Masked, Protected, environment All)." >&2
+        exit 1
+      fi
+      github_url="https://x-access-token:${GITHUB_TOKEN}@github.com/VectoreeAI/vectoree-deeptutor.git"
+      git fetch "$github_url" refs/heads/main
+      remote_sha="$(git rev-parse FETCH_HEAD)"
+      git rev-list HEAD --not FETCH_HEAD > /tmp/commits-to-publish
+      while IFS= read -r sha; do
+        [ -n "$sha" ] || continue
+        msg="$(git log -1 --format='%s%n%b' "$sha")"
+        if printf '%s\n' "$msg" | awk '
+          /ghp_/ { bad = 1 }
+          /github_pat_/ { bad = 1 }
+          /glpat-/ { bad = 1 }
+          /x-access-token:/ { bad = 1 }
+          /BEGIN / && /PRIVATE KEY/ { bad = 1 }
+          /AKIA[0-9A-Z][0-9A-Z][0-9A-Z][0-9A-Z][0-9A-Z][0-9A-Z][0-9A-Z][0-9A-Z][0-9A-Z][0-9A-Z][0-9A-Z][0-9A-Z][0-9A-Z][0-9A-Z][0-9A-Z][0-9A-Z]/ { bad = 1 }
+          END { exit bad ? 0 : 1 }
+        '; then
+          echo "Refusing to publish commit ${sha}: message matches a secret pattern." >&2
+          exit 1
+        fi
+      done < /tmp/commits-to-publish
+      rm -f /tmp/commits-to-publish
+      if git merge-base --is-ancestor FETCH_HEAD HEAD; then
+        git push "$github_url" "HEAD:refs/heads/main"
+        echo "GitHub main updated"
+      elif git merge-base FETCH_HEAD HEAD >/dev/null 2>&1; then
+        echo "GitHub main has diverged from GitLab main. Refusing to overwrite."
+        exit 1
+      else
+        echo "GitHub main has no common history. Replacing ${remote_sha} once."
+        git push --force-with-lease="refs/heads/main:${remote_sha}" "$github_url" "HEAD:refs/heads/main"
+        echo "GitHub main replaced"
+      fi

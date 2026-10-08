@@ -61,7 +61,7 @@ async def test_proxy_login_hides_vectoree_tokens(monkeypatch: pytest.MonkeyPatch
         return httpx.Response(
             200,
             json={
-                "user": {"email": "a@example.com"},
+                "user": {"id": "vt_a", "email": "a@example.com", "emailVerified": False},
                 "accessToken": ACCESS_TOKEN,
                 "refreshToken": "refresh-secret",
             },
@@ -88,7 +88,14 @@ async def test_proxy_login_hides_vectoree_tokens(monkeypatch: pytest.MonkeyPatch
         {"email": "a@example.com", "password": "secret"},
     )
 
-    assert result == AuthProxyResult(kind="session", http_status=200, email="a@example.com")
+    assert result == AuthProxyResult(
+        kind="session",
+        http_status=200,
+        email="a@example.com",
+        subject="vt_a",
+        issuer="https://vectoree.ai",
+        email_verified=False,
+    )
     dumped = json.dumps(result.__dict__)
     assert ACCESS_TOKEN not in dumped
     assert API_KEY not in dumped
@@ -141,7 +148,7 @@ def test_login_issues_a_deeptutor_cookie_without_the_vectoree_token(
     monkeypatch.setattr(
         app_auth,
         "provision_local_user",
-        lambda email: TokenPayload(username=email, role="user", user_id="u_test"),
+        lambda result: TokenPayload(username=result.email, role="user", user_id="u_test"),
     )
     monkeypatch.setattr(auth_service, "AUTH_SECRET", "test-secret")
     monkeypatch.setattr(auth_service, "TOKEN_EXPIRE_HOURS", 24)

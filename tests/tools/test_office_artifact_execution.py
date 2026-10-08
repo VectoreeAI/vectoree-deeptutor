@@ -3,9 +3,19 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+import mimetypes
 from pathlib import Path
 
 import pytest
+
+_DOCX_MIME = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+_XLSX_MIME = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+
+
+def _system_names_mime(filename: str, mime: str) -> bool:
+    guessed, _encoding = mimetypes.guess_type(filename)
+    return guessed == mime
+
 
 from deeptutor.services.path_service import PathService
 from deeptutor.services.workspace.execution import prepare_workspace_execution_env
@@ -105,6 +115,10 @@ async def test_exec_reads_existing_workspace_binary_through_symbolic_root(
 
 
 @pytest.mark.asyncio
+@pytest.mark.skipif(
+    not _system_names_mime("note.docx", _DOCX_MIME),
+    reason="system MIME database is not installed",
+)
 async def test_docx_creation_is_collected_and_presentable(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -157,6 +171,10 @@ async def test_docx_creation_is_collected_and_presentable(
 
 
 @pytest.mark.asyncio
+@pytest.mark.skipif(
+    not _system_names_mime("scores.xlsx", _XLSX_MIME),
+    reason="system MIME database is not installed",
+)
 async def test_xlsx_creation_is_collected_and_presentable(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

@@ -7,6 +7,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from fastapi import FastAPI
+from fastapi.routing import iter_route_contexts
 from fastapi.testclient import TestClient
 import pytest
 from starlette.datastructures import QueryParams
@@ -26,7 +27,7 @@ def test_preview_route_requires_authentication(monkeypatch) -> None:
     from deeptutor.api.routers import auth
 
     routes = [
-        route for route in app.routes if getattr(route, "path", "") == "/api/file-preview/pdf"
+        route for route in iter_route_contexts(app.routes) if route.path == "/api/file-preview/pdf"
     ]
     assert len(routes) == 2  # GET source and POST uploaded bytes
     assert all(

@@ -20,9 +20,9 @@ BookSource = Literal["own", "shared"]
 
 
 def _auth_enabled() -> bool:
-    from deeptutor.services.auth import AUTH_ENABLED
+    from deeptutor.services.auth import auth_required
 
-    return bool(AUTH_ENABLED)
+    return auth_required()
 
 
 def _admin_storage() -> BookStorage:

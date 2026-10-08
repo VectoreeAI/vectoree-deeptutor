@@ -4,10 +4,12 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 import json
+import os
 from pathlib import Path
 import stat
 from typing import Any
 from urllib.parse import parse_qs, urlsplit
+
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 import pytest
@@ -144,6 +146,8 @@ def test_project_root_defaults_to_cwd_data(tmp_path: Path, monkeypatch: pytest.M
 
 
 def test_read_only_root_is_a_clear_error(tmp_path: Path) -> None:
+    if hasattr(os, "geteuid") and os.geteuid() == 0:
+        pytest.skip("root bypasses directory mode bits")
     frozen = tmp_path / "frozen"
     frozen.mkdir()
     frozen.chmod(0o555)
@@ -215,8 +219,9 @@ def test_start_mints_a_key_and_poll_hides_it(tmp_path: Path) -> None:
     )
     assert pending["status"] == "pending"
     assert "code_challenge_method=S256" in pending["authorizeUrl"]
-    assert "redirect_uri=http%3A%2F%2F127.0.0.1%3A3782%2Fapi%2Fvectoree%2Flink%2Fcallback" in (
-        pending["authorizeUrl"]
+    assert (
+        "redirect_uri=http%3A%2F%2F127.0.0.1%3A3782%2Fapi%2Fvectoree%2Flink%2Fcallback"
+        in (pending["authorizeUrl"])
     )
     assert API_KEY not in json.dumps(pending)
     _deliver(linker, pending["authorizeUrl"])
@@ -322,6 +327,7 @@ def test_http_status_and_poll_never_return_the_key(tmp_path: Path) -> None:
     linker = VectoreeLinker(root=tmp_path, env={}, catalog=service, open_url=lambda _url: None)
     reset_linker(linker)
     app = FastAPI()
+    app.include_router(public_router, prefix="/api/vectoree")
     app.include_router(router, prefix="/api/vectoree")
     try:
         client = TestClient(app)
